@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/mshogin/archlint/internal/analyzer"
+	"github.com/mshogin/archlint/internal/config"
 	"github.com/mshogin/archlint/internal/mcp"
 	"github.com/spf13/cobra"
 )
@@ -38,11 +39,30 @@ type checkResult struct {
 	Total      int             `json:"total"`
 }
 
+// violationRuleMapping maps violation Kind values to .archlint.yaml rule names.
+var violationRuleMapping = map[string]string{
+	"high-efferent-coupling": "coupling",
+	"circular-dependency":    "dag_check",
+	"srp-too-many-methods":   "single_responsibility",
+	"srp-too-many-fields":    "single_responsibility",
+	"dip-concrete-dependency": "dependency_inversion",
+	"isp-fat-interface":      "interface_segregation",
+	"god-class":              "god_class",
+	"hub-node":               "hub_nodes",
+	"feature-envy":           "feature_envy",
+	"shotgun-surgery":        "shotgun_surgery",
+}
+
 func runCheck(cmd *cobra.Command, args []string) error {
 	codeDir := args[0]
 
 	if _, err := os.Stat(codeDir); os.IsNotExist(err) {
 		return fmt.Errorf("%w: %s", errDirNotExist, codeDir)
+	}
+
+	cfg, err := config.LoadRules(codeDir)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
 	}
 
 	a := analyzer.NewGoAnalyzer()
@@ -96,6 +116,9 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Filter out violations matching exclude patterns from config.
+	violations = filterViolations(violations, cfg)
+
 	// Sort violations by kind then target for stable output.
 	sort.Slice(violations, func(i, j int) bool {
 		if violations[i].Kind != violations[j].Kind {
@@ -139,4 +162,27 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// filterViolations removes violations whose target matches the exclude
+// patterns configured for the corresponding rule in .archlint.yaml.
+func filterViolations(violations []mcp.Violation, cfg *config.RulesConfig) []mcp.Violation {
+	if cfg == nil {
+		return violations
+	}
+
+	filtered := make([]mcp.Violation, 0, len(violations))
+
+	for _, v := range violations {
+		ruleName := violationRuleMapping[v.Kind]
+		excludes := cfg.ExcludesFor(ruleName)
+
+		if len(excludes) > 0 && config.MatchesExclude(v.Target, excludes) {
+			continue
+		}
+
+		filtered = append(filtered, v)
+	}
+
+	return filtered
 }

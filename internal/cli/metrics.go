@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/mshogin/archlint/internal/analyzer"
+	"github.com/mshogin/archlint/internal/config"
 	"github.com/mshogin/archlint/internal/mcp"
 	"github.com/spf13/cobra"
 )
@@ -63,6 +64,14 @@ func runMetrics(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("%w: %s", errDirNotExist, codeDir)
 	}
 
+	cfg, err := config.LoadRules(codeDir)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	// Collect all exclude patterns across all rules for package-level filtering.
+	allExcludes := collectAllExcludes(cfg)
+
 	a := analyzer.NewGoAnalyzer()
 
 	graph, err := a.Analyze(codeDir)
@@ -78,6 +87,11 @@ func runMetrics(cmd *cobra.Command, args []string) error {
 	for _, m := range allMetrics {
 		pkg := m.Package
 		if pkg == "" {
+			continue
+		}
+
+		// Skip packages that match any exclude pattern.
+		if len(allExcludes) > 0 && config.MatchesExclude(pkg, allExcludes) {
 			continue
 		}
 
@@ -154,4 +168,27 @@ func runMetrics(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// collectAllExcludes gathers a deduplicated union of exclude patterns
+// from all rules in the config. This is used for metrics where we filter
+// at the package level rather than per-rule.
+func collectAllExcludes(cfg *config.RulesConfig) []string {
+	if cfg == nil {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	var result []string
+
+	for _, rule := range cfg.Rules {
+		for _, pattern := range rule.Exclude {
+			if !seen[pattern] {
+				seen[pattern] = true
+				result = append(result, pattern)
+			}
+		}
+	}
+
+	return result
 }
